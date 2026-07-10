@@ -3,7 +3,7 @@ mod style;
 mod git;
 
 use std::io::{self, Read, Write};
-use chrono::{Local, TimeZone};
+use chrono::{Datelike, Local, TimeZone};
 use input::Root;
 use style::*;
 
@@ -25,7 +25,7 @@ fn main() {
     let mut seg2: Vec<String> = Vec::new();
     let mut seg3: Vec<String> = Vec::new();
 
-    // ---- Model segment (seg2) ----
+    // ---- Model segment (seg2 → line 1) ----
     let raw_name = i.model.as_ref().and_then(|m| m.display_name.as_deref()).unwrap_or("");
     // Strip trailing "(…)" e.g. " (1M context)"
     let model = {
@@ -40,9 +40,6 @@ fn main() {
 
     if !model.is_empty() {
         let mut mtxt = format!("🤖 {}", paint(&model, ORANGE));
-        if let Some(label) = fmt_ctx_label(cw_max) {
-            mtxt.push_str(&format!("{}", paint(&format!(" {}", label), MAGENTA)));
-        }
         if let Some(lvl) = i.effort.as_ref().and_then(|e| e.level.as_deref()) {
             if let Some((short, color)) = effort_short(lvl) {
                 mtxt.push(' ');
@@ -52,18 +49,19 @@ fn main() {
         seg2.push(mtxt);
     }
 
-    // ---- Folder segment (seg1) ----
+    // ---- Folder segment (seg1 → line 3) ----
     let cur = i.workspace.as_ref().and_then(|w| w.current_dir.as_deref())
         .or_else(|| i.cwd.as_deref())
         .unwrap_or("")
         .trim_end_matches(['\\', '/']);
 
     if !cur.is_empty() {
-        let folder = folder_label(cur);
-        seg1.push(paint(&format!("📂 {}", folder), BLUE));
+        let project = i.workspace.as_ref().and_then(|w| w.project_dir.as_deref());
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
+        seg1.push(folder_segment(cur, project, home.as_deref()));
     }
 
-    // ---- Context window segment (seg2) ----
+    // ---- Context window segment (seg2 → line 1) ----
     let cw = i.context_window.as_ref();
     let ctx_used = cw.and_then(|c| c.used_percentage).unwrap_or(0.0);
     let cw_cur = cw.and_then(|c| c.total_input_tokens)
@@ -77,41 +75,28 @@ fn main() {
         .unwrap_or(0.0);
 
     let ctx_color = ctx_color(ctx_used);
-    // Cache hit rate
-    let hit_txt = if let Some(cu) = cw.and_then(|c| c.current_usage.as_ref()) {
-        let cache_read = cu.cache_read_input_tokens.unwrap_or(0.0);
-        if cache_read > 0.0 {
-            let c_total = cu.input_tokens.unwrap_or(0.0)
-                + cu.cache_creation_input_tokens.unwrap_or(0.0)
-                + cache_read;
-            let hit_pct = (cache_read / c_total * 100.0) as u32;
-            let hit_color = if hit_pct >= 75 { GREEN } else if hit_pct >= 40 { YELLOW } else { MUTED };
-            format!(" {}", paint(&format!("({}%)", hit_pct), hit_color))
-        } else {
-            String::new()
-        }
+    // Token count as current/max: current bright (WHITE), max toned down (DIM); e.g. "47k/1M"
+    let tok_txt = if cw_max > 0.0 {
+        format!(
+            "{}{}",
+            paint(&fmt_tok(cw_cur), WHITE),
+            paint(&format!("/{}", fmt_tok(cw_max)), DIM),
+        )
     } else {
-        String::new()
+        paint(&fmt_tok(cw_cur), WHITE)
     };
 
     seg2.push(format!(
-        "🧠 {} {}{}",
+        "🧠 {} {}",
         paint(&format!("{} {}%", bar_str(ctx_used), ctx_used as u32), ctx_color),
-        paint(&fmt_tok(cw_cur), WHITE),
-        hit_txt
+        tok_txt,
     ));
 
-    // ---- Rate limits (seg3) ----
-    if let Some(rl) = i.rate_limits.as_ref() {
-        if let Some(s) = fmt_limit("⏳ 5h", rl.five_hour.as_ref(), "5h") { seg3.push(s); }
-        if let Some(s) = fmt_limit("📅 1w", rl.seven_day.as_ref(), "1w") { seg3.push(s); }
-    }
-
-    // ---- Session time (seg3) ----
+    // ---- Session time (seg2 → line 1, last) ----
     let dur_ms = i.cost.as_ref().and_then(|c| c.total_duration_ms).unwrap_or(0.0);
     if dur_ms > 0.0 {
         let min = (dur_ms / 60_000.0).floor() as u64;
-        seg3.push(format!("☕ {}", paint(&format!("{}h {}m", min / 60, min % 60), PEACH)));
+        seg2.push(format!("☕ {}", paint(&format!("{}h {}m", min / 60, min % 60), PEACH)));
     }
 
     // ---- Git (seg1) ----
@@ -145,53 +130,95 @@ fn main() {
         }
     }
 
-    // ---- Cost (seg1) ----
-    if let Some(cost) = i.cost.as_ref().and_then(|c| c.total_cost_usd) {
-        seg1.push(paint(&format!("💰 {}", fmt_cost(cost)), GOLD));
+    // ---- Rate limits (seg3 → line 2) ----
+    if let Some(rl) = i.rate_limits.as_ref() {
+        if let Some(s) = fmt_limit("⏳ 5h", rl.five_hour.as_ref(), "5h") { seg3.push(s); }
+        if let Some(s) = fmt_limit("📅 7d", rl.seven_day.as_ref(), "7d") { seg3.push(s); }
     }
 
     // ---- Emit output ----
-    let line1 = seg1.join(&separator);
-    let line2 = seg2.join(&separator);
-    let line3 = seg3.join(&separator);
+    // line 1 = seg2 (model · ctx · time)
+    // line 2 = seg3 (5h · 7d)
+    // line 3 = seg1 (folder · git · ahead/behind)
+    let line1 = seg2.join(&separator);
+    let line2 = seg3.join(&separator);
+    let line3 = seg1.join(&separator);
 
-    let output = if !line3.is_empty() {
-        format!("{}\n{}\n{}", line2, line3, line1)
-    } else if !line2.is_empty() {
-        format!("{}\n{}", line2, line1)
-    } else {
-        line1
-    };
+    let output = [line1, line2, line3]
+        .into_iter()
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let stdout = io::stdout();
     let _ = stdout.lock().write_all(output.as_bytes());
 }
 
-fn folder_label(cur: &str) -> String {
-    let parts: Vec<&str> = cur.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
-    if parts.len() >= 2 {
-        let folder = format!("{}\\{}", parts[parts.len() - 2], parts[parts.len() - 1]);
-        // Drive-root fix: "D:" → "D:\"
-        if folder.len() == 2 && folder.ends_with(':') {
-            format!("{}\\", folder)
-        } else {
-            folder
+/// Render the folder segment for line 2.
+/// - current == home            → "📂 ~"                    (BLUE)
+/// - current under project_dir  → "📂 <proj>" + "\<rel>"    (BLUE + CYAN)
+/// - otherwise                  → "📂 <leaf>"               (BLUE)
+fn folder_segment(cur: &str, project: Option<&str>, home: Option<&str>) -> String {
+    if let Some(h) = home {
+        if path_eq(cur, h) {
+            return paint("📂 ~", BLUE);
         }
-    } else if parts.len() == 1 {
-        let s = parts[0].to_string();
-        if s.len() == 2 && s.ends_with(':') { format!("{}\\", s) } else { s }
+    }
+    if let Some(p) = project {
+        if let Some(rel) = rel_path(cur, p) {
+            return format!(
+                "{}{}",
+                paint(&format!("📂 {}", leaf(p)), BLUE),
+                paint(&format!("\\{}", rel), CYAN),
+            );
+        }
+    }
+    paint(&format!("📂 {}", leaf(cur)), BLUE)
+}
+
+/// Normalize a path for comparison: drop trailing separators, unify to '\', lowercase.
+fn norm(p: &str) -> String {
+    p.trim_end_matches(['\\', '/']).replace('/', "\\").to_lowercase()
+}
+
+fn path_eq(a: &str, b: &str) -> bool {
+    norm(a) == norm(b)
+}
+
+/// If `cur` is strictly below `project`, return the relative remainder using '\' separators.
+fn rel_path(cur: &str, project: &str) -> Option<String> {
+    let cur = cur.trim_end_matches(['\\', '/']);
+    let p = project.trim_end_matches(['\\', '/']);
+    if p.is_empty() {
+        return None;
+    }
+    let cn = norm(cur);
+    let pn = norm(p);
+    if cn.len() > pn.len() && cn.starts_with(&pn) && cn.as_bytes()[pn.len()] == b'\\' {
+        cur.get(pn.len()..)
+            .map(|tail| tail.trim_start_matches(['\\', '/']).replace('/', "\\"))
     } else {
-        cur.to_string()
+        None
+    }
+}
+
+/// Last path component; drive-root "D:" renders as "D:\".
+fn leaf(path: &str) -> String {
+    let parts: Vec<&str> = path.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
+    match parts.last() {
+        Some(s) if s.len() == 2 && s.ends_with(':') => format!("{}\\", s),
+        Some(s) => s.to_string(),
+        None => path.to_string(),
     }
 }
 
 fn fmt_limit(label: &str, node: Option<&input::RateLimit>, kind: &str) -> Option<String> {
     let node = node?;
     let used_pct = node.used_percentage?;
-    let rem = 100.0 - used_pct;
-    let rem_i = rem.round() as i64;
-    let lc = limit_color(rem);
-    let mut result = format!("{} {}", label, paint(&format!("{} {}%", bar_str(rem), rem_i), lc));
+    let used_i = used_pct.round() as i64;
+    // Show usage % (matches Claude's web usage page and the raw stdin); warms as it fills
+    let lc = ctx_color(used_pct);
+    let mut result = format!("{} {}", label, paint(&format!("{} {}%", bar_str(used_pct), used_i), lc));
 
     if let Some(resets_at) = node.resets_at {
         let reset_local = Local.timestamp_opt(resets_at as i64, 0).single();
@@ -202,7 +229,16 @@ fn fmt_limit(label: &str, node: Option<&input::RateLimit>, kind: &str) -> Option
                 let today = Local::now().date_naive();
                 let reset_date = reset.date_naive();
                 let days = (reset_date - today).num_days();
-                result.push_str(&paint(&format!(" {}d {}", days, reset.format("%H:%M")), MUTED));
+                let wd = kor_weekday(reset.weekday());
+                let hm = reset.format("%H:%M");
+                let txt = if days >= 2 {
+                    format!(" {}d({}) {}", days, wd, hm)
+                } else if days == 1 {
+                    format!(" 내일({}) {}", wd, hm)
+                } else {
+                    format!(" 오늘({}) {}", wd, hm)
+                };
+                result.push_str(&paint(&txt, MUTED));
             }
         }
     }
@@ -210,20 +246,72 @@ fn fmt_limit(label: &str, node: Option<&input::RateLimit>, kind: &str) -> Option
     Some(result)
 }
 
+/// Korean single-letter weekday for a reset date.
+fn kor_weekday(wd: chrono::Weekday) -> &'static str {
+    use chrono::Weekday::*;
+    match wd {
+        Mon => "월",
+        Tue => "화",
+        Wed => "수",
+        Thu => "목",
+        Fri => "금",
+        Sat => "토",
+        Sun => "일",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn folder_label_two_depth() {
-        assert_eq!(folder_label("D:\\github\\myproject"), "github\\myproject");
-        assert_eq!(folder_label("D:\\github"), "D:\\github");
-        assert_eq!(folder_label("/home/user/project"), "user\\project");
+    fn strip(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c2 in chars.by_ref() {
+                    if c2 == 'm' { break; }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
     }
 
     #[test]
-    fn folder_label_drive_root() {
-        // single segment that is a drive letter
-        assert_eq!(folder_label("D:"), "D:\\");
+    fn leaf_cases() {
+        assert_eq!(leaf("D:\\Workspace\\claude-statusline"), "claude-statusline");
+        assert_eq!(leaf("/home/user/project"), "project");
+        assert_eq!(leaf("D:\\github"), "github");
+        assert_eq!(leaf("D:"), "D:\\");
+    }
+
+    #[test]
+    fn rel_path_cases() {
+        assert_eq!(rel_path("D:\\proj\\src\\ui", "D:\\proj"), Some("src\\ui".to_string()));
+        assert_eq!(rel_path("D:/proj/src", "D:\\proj\\"), Some("src".to_string()));
+        assert_eq!(rel_path("D:\\proj", "D:\\proj"), None);
+        assert_eq!(rel_path("D:\\proj2\\x", "D:\\proj"), None);
+        assert_eq!(rel_path("D:\\other", "D:\\proj"), None);
+    }
+
+    #[test]
+    fn folder_segment_cases() {
+        let home = Some("C:\\Users\\me");
+        assert_eq!(strip(&folder_segment("C:\\Users\\me", None, home)), "📂 ~");
+        assert_eq!(strip(&folder_segment("c:\\users\\ME", None, home)), "📂 ~");
+        assert_eq!(strip(&folder_segment("D:\\proj", Some("D:\\proj"), home)), "📂 proj");
+        assert_eq!(strip(&folder_segment("D:\\proj\\src\\ui", Some("D:\\proj"), home)), "📂 proj\\src\\ui");
+        assert_eq!(strip(&folder_segment("D:\\proj\\src", None, home)), "📂 src");
+        assert_eq!(strip(&folder_segment("D:\\other\\x", Some("D:\\proj"), home)), "📂 x");
+    }
+
+    #[test]
+    fn kor_weekday_maps() {
+        use chrono::Weekday;
+        assert_eq!(kor_weekday(Weekday::Mon), "월");
+        assert_eq!(kor_weekday(Weekday::Fri), "금");
+        assert_eq!(kor_weekday(Weekday::Sun), "일");
     }
 }

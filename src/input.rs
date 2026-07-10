@@ -24,6 +24,7 @@ pub struct Effort {
 #[derive(Deserialize, Default)]
 pub struct Workspace {
     pub current_dir: Option<String>,
+    pub project_dir: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -55,6 +56,5 @@ pub struct RateLimit {
 
 #[derive(Deserialize, Default)]
 pub struct Cost {
-    pub total_cost_usd: Option<f64>,
     pub total_duration_ms: Option<f64>,
 }

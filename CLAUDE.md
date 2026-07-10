@@ -4,7 +4,7 @@
 
 This project implements a **custom Claude Code statusline in Rust**. The statusline binary
 (`statusline.exe`) is invoked by Claude Code on every prompt render and prints 3 lines of
-ANSI-colored status information (model/context, rate limits, git/cost) to stdout.
+ANSI-colored status information (model/context/time · rate-limits · folder/git) to stdout.
 
 Customizations are made by editing the Rust source in `src/`, then building and installing.
 Do **not** create separate PowerShell or shell scripts to implement statusline logic — all
@@ -16,6 +16,7 @@ behavior lives in the Rust code.
 Cargo.toml              Rust project (edition 2021, serde + serde_json + chrono)
 statusline-example.json Fixture — sample Claude Code stdin payload
 statusline-mockup.txt   Layout/color spec reference
+statusline-input-schema.md  Full stdin JSON schema (all fields, versions, what we parse)
 src/
   main.rs               Orchestration: parse stdin → render 3 lines → stdout
   input.rs              Serde structs for the Claude Code JSON payload
@@ -86,7 +87,7 @@ If tests fail, the build is aborted.
 Get-Content statusline-example.json -Raw | dist\statusline.exe
 ```
 
-Expected: 3 lines of ANSI-colored text (model/ctx/burn · limits/session · folder/git/cost).
+Expected: 3 lines of ANSI-colored text (model/ctx/time · limits · folder/git).
 
 ## Install
 
@@ -145,11 +146,15 @@ If the user asks to modify the statusline:
 
 ## Output format
 
-- **Line 1 (top):** model name · context window label · effort level · context % + token count + cache hit rate
-- **Line 2 (middle):** 5-hour rate limit · weekly rate limit · session elapsed time
-- **Line 3 (bottom):** current folder (2-depth) · git branch + status · ahead/behind · session cost
+- **Line 1 (top):** model name · effort level · context bar + % + token count (`cur/max`) · session elapsed time
+- **Line 2 (middle):** 5-hour rate limit (usage %) · 7-day rate limit (usage %)
+- **Line 3 (bottom):** current folder · git branch + status · ahead/behind
 
-Lines are separated by `\n`; no trailing newline. Output is raw UTF-8 bytes written directly to stdout.
+Folder rendering: home dir → `~`; a sub-directory of `project_dir` → `<project>\<relative>` (relative part in cyan); otherwise the current folder's leaf name.
+
+Rate-limit bars show **usage %** (matching Claude's web usage page and the raw `used_percentage`), as horizontal 10-cell bars that fill and warm in color as usage rises — same semantics and color thresholds as the context bar (`ctx_color`). The 7-day reset shows the Korean weekday: `2d(수) 07:00` / `내일(목) 12:34` / `오늘(금) 23:42`.
+
+Empty lines are omitted (e.g. no rate-limit data → line 2 is dropped). Lines are separated by `\n`; no trailing newline. Output is raw UTF-8 bytes written directly to stdout.
 
 ## Dependencies
 

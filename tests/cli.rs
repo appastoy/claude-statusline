@@ -41,24 +41,26 @@ fn example_payload_contains_expected_segments() {
     let output = run_statusline(EXAMPLE_JSON);
     let plain = strip_ansi(&output);
 
-    // Model line
+    // Model line — context-window label removed; effort still present
     assert!(plain.contains("Opus 4.8"), "missing model: {}", plain);
-    assert!(plain.contains("1M"), "missing ctx label: {}", plain);
     assert!(plain.contains(" H"), "missing effort: {}", plain);
 
-    // Context
+    // Context — token count now shown as current/max
     assert!(plain.contains("5%"), "missing ctx pct: {}", plain);
-    assert!(plain.contains("47k"), "missing tok count: {}", plain);
-    assert!(plain.contains("(83%)"), "missing cache hit: {}", plain);
+    assert!(plain.contains("47k/1M"), "missing tok count/max: {}", plain);
+    assert!(!plain.contains("(83%)"), "cache hit rate should be removed: {}", plain);
 
-    // Folder — "D:\\github" → last 2 depth is "D:\\github" (single parent = drive)
-    assert!(plain.contains("D:\\github") || plain.contains("D:"), "missing folder: {}", plain);
+    // Folder — current_dir == project_dir "D:\\github" → leaf "github"
+    assert!(plain.contains("github"), "missing folder: {}", plain);
 
-    // No git in D:\github (likely not a repo, just check no git doesn't crash)
-    // Cost
-    assert!(plain.contains("$1.12"), "missing cost: {}", plain);
+    // Cost removed
+    assert!(!plain.contains("$1.12"), "cost should be removed: {}", plain);
 
-    // Three lines
+    // Rate limits on line 2
+    assert!(plain.contains("5h"), "missing 5h limit: {}", plain);
+    assert!(plain.contains("7d"), "missing 7d limit: {}", plain);
+
+    // Three lines: model/ctx/time · rate-limits · folder/git
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(lines.len(), 3, "expected 3 lines, got {}: {:?}", lines.len(), lines);
 }
