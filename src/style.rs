@@ -26,6 +26,13 @@ pub fn ctx_color(used: f64) -> &'static str {
     else { RED }
 }
 
+pub fn limit_color(rem: f64) -> &'static str {
+    if rem >= 50.0 { GREEN }
+    else if rem >= 25.0 { YELLOW }
+    else if rem >= 10.0 { ORANGE }
+    else { RED }
+}
+
 pub fn bar_str(pct: f64) -> String {
     let filled = ((pct / 100.0 * 10.0).round() as usize).min(10);
     let empty = 10 - filled;
@@ -88,6 +95,17 @@ mod tests {
         assert_eq!(ctx_color(75.0), ORANGE);
         assert_eq!(ctx_color(89.9), ORANGE);
         assert_eq!(ctx_color(90.0), RED);
+    }
+
+    #[test]
+    fn limit_color_thresholds() {
+        assert_eq!(limit_color(100.0), GREEN);
+        assert_eq!(limit_color(50.0), GREEN);
+        assert_eq!(limit_color(49.9), YELLOW);
+        assert_eq!(limit_color(25.0), YELLOW);
+        assert_eq!(limit_color(24.9), ORANGE);
+        assert_eq!(limit_color(10.0), ORANGE);
+        assert_eq!(limit_color(9.9), RED);
     }
 
     #[test]

@@ -41,33 +41,52 @@ $settings = if (Test-Path $settingsPath) {
     [pscustomobject]@{}
 }
 
-$current = $settings.statusLine.command
-if ($current -eq $expectedCommand) {
-    Write-Host "  statusLine.command already correct — no change needed."
+# refreshInterval (seconds) re-runs the statusline on a timer, which drives the
+# prompt cache countdown even while the session is idle.
+$expectedRefresh = 30
+
+$current        = $settings.statusLine.command
+$currentRefresh = $settings.statusLine.refreshInterval
+$commandOk      = ($current -eq $expectedCommand)
+$refreshOk      = ($currentRefresh -eq $expectedRefresh)
+
+if ($commandOk -and $refreshOk) {
+    Write-Host "  statusLine.command and refreshInterval already correct — no change needed."
 } else {
-    if ($current) {
+    if ($commandOk) {
+        Write-Host "  statusLine.command already correct."
+    } elseif ($current) {
         Write-Host "  Replacing: $current"
     } else {
         Write-Host "  No statusLine.command found — adding."
     }
-
-    # Build the statusLine block
-    $statusLine = [pscustomobject]@{
-        type    = 'command'
-        command = $expectedCommand
+    if (-not $refreshOk) {
+        if ($null -ne $currentRefresh) {
+            Write-Host "  Replacing refreshInterval: $currentRefresh"
+        } else {
+            Write-Host "  No statusLine.refreshInterval found — adding."
+        }
     }
 
-    # Add or replace the statusLine property
-    if ($settings.PSObject.Properties['statusLine']) {
-        $settings.statusLine = $statusLine
+    if ($settings.PSObject.Properties['statusLine'] -and $settings.statusLine -is [pscustomobject]) {
+        # Keep any other statusLine keys (e.g. padding); set only ours
+        $settings.statusLine | Add-Member -NotePropertyName 'type' -NotePropertyValue 'command' -Force
+        $settings.statusLine | Add-Member -NotePropertyName 'command' -NotePropertyValue $expectedCommand -Force
+        $settings.statusLine | Add-Member -NotePropertyName 'refreshInterval' -NotePropertyValue $expectedRefresh -Force
     } else {
+        $statusLine = [pscustomobject]@{
+            type            = 'command'
+            command         = $expectedCommand
+            refreshInterval = $expectedRefresh
+        }
         $settings | Add-Member -NotePropertyName 'statusLine' -NotePropertyValue $statusLine -Force
     }
 
     $json = $settings | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($settingsPath, $json, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($settingsPath, $json, [System.Text.UTF8Encoding]::new($false))
     Write-Host "  Saved."
     Write-Host "  statusLine.command = $expectedCommand"
+    Write-Host "  statusLine.refreshInterval = $expectedRefresh"
 }
 
 Write-Host ""

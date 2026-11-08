@@ -107,10 +107,23 @@ Legend — **Presence:** ● always · ○ conditional (only when a condition ho
 | Field | Type | Presence | Parsed | Meaning |
 |-------|------|:-:|:-:|---------|
 | `rate_limits` | object | ○ | ✅ | Claude.ai Pro/Max only, after first API response |
-| `rate_limits.five_hour.used_percentage` | number | ● | ✅ | 5h window used % → bar (usage; warms as it fills) |
+| `rate_limits.five_hour.used_percentage` | number | ● | ✅ | 5h window used % → shown as remaining (`100 - used`); bar drains and warms as it runs out |
 | `rate_limits.five_hour.resets_at` | number | ● | ✅ | Unix epoch seconds → reset time |
-| `rate_limits.seven_day.used_percentage` | number | ● | ✅ | 7d window used % |
+| `rate_limits.seven_day.used_percentage` | number | ● | ✅ | 7d window used % → shown as remaining (`100 - used`) |
 | `rate_limits.seven_day.resets_at` | number | ● | ✅ | Unix epoch seconds → reset time (with Korean weekday) |
+
+### `prompt_cache`
+
+| Field | Type | Presence | Parsed | Meaning |
+|-------|------|:-:|:-:|---------|
+| `prompt_cache` | object | ○ | ✅ | Absent → no cache segment |
+| `prompt_cache.warm` | boolean | ○ | ✅ | Cache currently warm |
+| `prompt_cache.caching_observed` | boolean | ○ | ✅ | Must be `true` or the segment is hidden |
+| `prompt_cache.expires_at` | number\|null | ○ | ✅ | Unix epoch seconds; `🔥 Nm` countdown when warm and in the future, else `🧊 cold` |
+
+### `statusLine` setting: `refreshInterval`
+
+`statusLine.refreshInterval` (seconds) in `settings.json` re-runs the command on a timer in addition to event-driven renders. `install.ps1` sets it to `30` so the cache countdown ticks while idle.
 
 ### Conditional objects (not seen in the 2.1.206 capture — need the right context)
 

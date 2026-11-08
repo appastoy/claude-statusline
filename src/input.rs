@@ -9,6 +9,7 @@ pub struct Root {
     pub context_window: Option<ContextWindow>,
     pub rate_limits: Option<RateLimits>,
     pub cost: Option<Cost>,
+    pub prompt_cache: Option<PromptCache>,
 }
 
 #[derive(Deserialize, Default)]
@@ -57,4 +58,12 @@ pub struct RateLimit {
 #[derive(Deserialize, Default)]
 pub struct Cost {
     pub total_duration_ms: Option<f64>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct PromptCache {
+    pub warm: Option<bool>,
+    pub caching_observed: Option<bool>,
+    /// Unix seconds; may be null
+    pub expires_at: Option<f64>,
 }

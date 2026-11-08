@@ -99,6 +99,9 @@ fn main() {
         seg2.push(format!("☕ {}", paint(&format!("{}h {}m", min / 60, min % 60), PEACH)));
     }
 
+    // ---- Prompt cache (seg2 → line 1, after session time) ----
+    if let Some(s) = cache_segment(i.prompt_cache.as_ref(), now_secs()) { seg2.push(s); }
+
     // ---- Git (seg1) ----
     if !cur.is_empty() {
         match git::query(cur) {
@@ -132,8 +135,8 @@ fn main() {
 
     // ---- Rate limits (seg3 → line 2) ----
     if let Some(rl) = i.rate_limits.as_ref() {
-        if let Some(s) = fmt_limit("⏳ 5h", rl.five_hour.as_ref(), "5h") { seg3.push(s); }
-        if let Some(s) = fmt_limit("📅 7d", rl.seven_day.as_ref(), "7d") { seg3.push(s); }
+        if let Some(s) = fmt_limit("⏳ 5h", rl.five_hour.as_ref(), "5h", now_secs()) { seg3.push(s); }
+        if let Some(s) = fmt_limit("📅 7d", rl.seven_day.as_ref(), "7d", now_secs()) { seg3.push(s); }
     }
 
     // ---- Emit output ----
@@ -212,13 +215,53 @@ fn leaf(path: &str) -> String {
     }
 }
 
-fn fmt_limit(label: &str, node: Option<&input::RateLimit>, kind: &str) -> Option<String> {
+/// Current Unix time in seconds.
+fn now_secs() -> f64 {
+    Local::now().timestamp() as f64
+}
+
+const PACE_MIN_ELAPSED_PCT: f64 = 10.0;
+const PACE_MIN_OVERSHOOT_PCT: f64 = 10.0;
+
+/// True when usage runs ahead of the elapsed share of the window by 10+ points.
+/// Ignored during the first 10% of the window and when `resets_at` is unknown.
+fn over_pace(used_pct: f64, resets_at: Option<f64>, now: f64, window_secs: f64) -> bool {
+    let Some(resets_at) = resets_at else { return false };
+    if window_secs <= 0.0 { return false; }
+    let remaining = resets_at - now;
+    let elapsed_pct = ((window_secs - remaining) * 100.0 / window_secs).clamp(0.0, 100.0);
+    elapsed_pct >= PACE_MIN_ELAPSED_PCT && used_pct - elapsed_pct >= PACE_MIN_OVERSHOOT_PCT
+}
+
+/// Render the prompt cache segment: "🔥 Nm" while warm, "🧊 cold" otherwise.
+/// None when the cache state is absent or caching was never observed.
+fn cache_segment(pc: Option<&input::PromptCache>, now: f64) -> Option<String> {
+    let pc = pc?;
+    if pc.caching_observed != Some(true) { return None; }
+    if pc.warm == Some(true) {
+        if let Some(exp) = pc.expires_at {
+            if exp > now {
+                let mins = ((exp - now) / 60.0).ceil() as u64;
+                return Some(format!("🔥 {}", paint(&format!("{}m", mins), GREEN)));
+            }
+        }
+    }
+    Some(format!("🧊 {}", paint("cold", SKY)))
+}
+
+fn fmt_limit(label: &str, node: Option<&input::RateLimit>, kind: &str, now: f64) -> Option<String> {
     let node = node?;
     let used_pct = node.used_percentage?;
-    let used_i = used_pct.round() as i64;
-    // Show usage % (matches Claude's web usage page and the raw stdin); warms as it fills
-    let lc = ctx_color(used_pct);
-    let mut result = format!("{} {}", label, paint(&format!("{} {}%", bar_str(used_pct), used_i), lc));
+    // Show remaining %: the bar drains and warms as the limit runs out
+    let rem = (100.0 - used_pct).clamp(0.0, 100.0);
+    let rem_i = rem.round() as i64;
+    let lc = limit_color(rem);
+    let mut result = format!("{} {}", label, paint(&format!("{} {}%", bar_str(rem), rem_i), lc));
+
+    let window = if kind == "5h" { 18_000.0 } else { 604_800.0 };
+    if over_pace(used_pct, node.resets_at, now, window) {
+        result.push_str(&paint(" ▼과속", ORANGE));
+    }
 
     if let Some(resets_at) = node.resets_at {
         let reset_local = Local.timestamp_opt(resets_at as i64, 0).single();
@@ -305,6 +348,57 @@ mod tests {
         assert_eq!(strip(&folder_segment("D:\\proj\\src\\ui", Some("D:\\proj"), home)), "📂 proj\\src\\ui");
         assert_eq!(strip(&folder_segment("D:\\proj\\src", None, home)), "📂 src");
         assert_eq!(strip(&folder_segment("D:\\other\\x", Some("D:\\proj"), home)), "📂 x");
+    }
+
+    #[test]
+    fn over_pace_boundaries() {
+        let w = 18_000.0;
+        let now = 1_000_000.0;
+        // 50% elapsed (9000s left)
+        let r = Some(now + 9_000.0);
+        assert!(over_pace(60.0, r, now, w));   // exactly 10 over
+        assert!(!over_pace(59.9, r, now, w));  // just below
+        assert!(over_pace(90.0, r, now, w));
+        assert!(!over_pace(40.0, r, now, w));  // under pace
+        // exactly 10% elapsed (16200s left): 20 used is exactly 10 over
+        assert!(over_pace(20.0, Some(now + 16_200.0), now, w));
+        // elapsed just under 10% (16201s left): suppressed
+        assert!(!over_pace(50.0, Some(now + 16_201.0), now, w));
+        assert!(!over_pace(30.0, Some(now + 17_000.0), now, w));
+        // reset already past: elapsed clamps to 100, never over pace
+        assert!(!over_pace(100.0, Some(now - 5.0), now, w));
+        // no resets_at
+        assert!(!over_pace(100.0, None, now, w));
+        // 7d window
+        let wk = 604_800.0;
+        assert!(over_pace(60.0, Some(now + wk / 2.0), now, wk));
+        assert!(!over_pace(59.0, Some(now + wk / 2.0), now, wk));
+    }
+
+    #[test]
+    fn fmt_limit_pace_marker() {
+        let now = 1_000_000.0;
+        let node = input::RateLimit { used_percentage: Some(60.0), resets_at: Some(now + 9_000.0) };
+        assert!(strip(&fmt_limit("⏳ 5h", Some(&node), "5h", now).unwrap()).contains("40% ▼과속 "));
+        let ok = input::RateLimit { used_percentage: Some(50.0), resets_at: Some(now + 9_000.0) };
+        assert!(!strip(&fmt_limit("⏳ 5h", Some(&ok), "5h", now).unwrap()).contains("과속"));
+    }
+
+    #[test]
+    fn cache_segment_cases() {
+        let now = 1_000_000.0;
+        let pc = |warm, obs, exp| input::PromptCache { warm, caching_observed: obs, expires_at: exp };
+        assert_eq!(cache_segment(None, now), None);
+        assert_eq!(cache_segment(Some(&pc(Some(true), None, Some(now + 60.0))), now), None);
+        assert_eq!(cache_segment(Some(&pc(Some(true), Some(false), Some(now + 60.0))), now), None);
+        let t = |p: input::PromptCache| strip(&cache_segment(Some(&p), now).unwrap());
+        assert_eq!(t(pc(Some(true), Some(true), Some(now + 60.0))), "🔥 1m");
+        assert_eq!(t(pc(Some(true), Some(true), Some(now + 61.0))), "🔥 2m");
+        assert_eq!(t(pc(Some(true), Some(true), Some(now + 1.0))), "🔥 1m");
+        assert_eq!(t(pc(Some(true), Some(true), Some(now))), "🧊 cold");
+        assert_eq!(t(pc(Some(true), Some(true), None)), "🧊 cold");
+        assert_eq!(t(pc(Some(false), Some(true), Some(now + 60.0))), "🧊 cold");
+        assert_eq!(t(pc(None, Some(true), Some(now + 60.0))), "🧊 cold");
     }
 
     #[test]

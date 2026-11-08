@@ -21,7 +21,6 @@ src/
   main.rs               Orchestration: parse stdin → render 3 lines → stdout
   input.rs              Serde structs for the Claude Code JSON payload
   style.rs              ANSI colors, bar chars, fmt_tok, fmt_cost, effort map
-  burn.rs               burn_state.json EMA state machine (token burn rate)
   git.rs                git status --porcelain=v2 --branch parser
 tests/
   cli.rs                Integration test: pipe JSON into the binary
@@ -146,13 +145,17 @@ If the user asks to modify the statusline:
 
 ## Output format
 
-- **Line 1 (top):** model name · effort level · context bar + % + token count (`cur/max`) · session elapsed time
-- **Line 2 (middle):** 5-hour rate limit (usage %) · 7-day rate limit (usage %)
+- **Line 1 (top):** model name · effort level · context bar + % + token count (`cur/max`) · session elapsed time · prompt cache (`🔥 Nm` warm countdown / `🧊 cold`; omitted when `prompt_cache` is absent or `caching_observed` is not true)
+- **Line 2 (middle):** 5-hour rate limit (remaining %) · 7-day rate limit (remaining %)
 - **Line 3 (bottom):** current folder · git branch + status · ahead/behind
 
 Folder rendering: home dir → `~`; a sub-directory of `project_dir` → `<project>\<relative>` (relative part in cyan); otherwise the current folder's leaf name.
 
-Rate-limit bars show **usage %** (matching Claude's web usage page and the raw `used_percentage`), as horizontal 10-cell bars that fill and warm in color as usage rises — same semantics and color thresholds as the context bar (`ctx_color`). The 7-day reset shows the Korean weekday: `2d(수) 07:00` / `내일(목) 12:34` / `오늘(금) 23:42`.
+Rate-limit bars show **remaining %** (`100 - used_percentage`), as horizontal 10-cell bars that drain and warm in color as the limit runs out (`limit_color`: green ≥50, yellow ≥25, orange ≥10, else red). The 7-day reset shows the Korean weekday: `2d(수) 07:00` / `내일(목) 12:34` / `오늘(금) 23:42`.
+
+Pace marker: when usage runs ahead of the elapsed share of the window by 10+ points (and at least 10% of the window has elapsed), an orange `▼과속` follows the percent, before the reset time. Windows: 5h = 18000s, 7d = 604800s; `over_pace` in `src/main.rs`. Never shown without `resets_at`.
+
+Prompt cache: `🔥 Nm` (green, N = ceil(remaining seconds / 60)) while `warm` and `expires_at` is in the future, else `🧊 cold` (sky). Uses the single-codepoint 🧊 (the snowflake variant with a variation selector misrenders in width calculation). The countdown needs `statusLine.refreshInterval` = 30, which `install.ps1` sets in `settings.json`.
 
 Empty lines are omitted (e.g. no rate-limit data → line 2 is dropped). Lines are separated by `\n`; no trailing newline. Output is raw UTF-8 bytes written directly to stdout.
 
